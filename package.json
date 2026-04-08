@@ -1,0 +1,19 @@
+{
+  "name": "ts-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A simple but extensible TypeScript agent framework without third-party AI SDKs.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json && node dist/demo.js",
+    "start": "node dist/demo.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "typescript": "^5.9.2"
+  }
+}
