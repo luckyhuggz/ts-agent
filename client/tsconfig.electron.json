@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": false,
+    "allowImportingTsExtensions": false,
+    "outDir": "./dist-electron",
+    "rootDir": "./electron",
+    "types": ["node"],
+    "allowSyntheticDefaultImports": true
+  },
+  "include": ["electron/**/*.ts", "electron/**/*.mts", "electron/**/*.cts"]
+}
