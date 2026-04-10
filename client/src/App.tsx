@@ -9,7 +9,14 @@ import { ModelConfigDialog } from "@/components/ModelConfig";
 import { loadConfig, saveConfig, type ModelConfig } from "@/lib/config";
 import { Agent } from "@/agent/agent";
 import { OpenAICompatibleChatModel } from "@/agent/model";
-import { ToolRegistry, createClockTool, createCalculatorTool } from "@/agent/tools";
+import {
+  ToolRegistry,
+  createClockTool,
+  createCalculatorTool,
+  createDocumentReadTool,
+  createDocumentEditTool,
+  createShellTool,
+} from "@/agent/tools";
 
 let abortController: AbortController | null = null;
 
@@ -21,7 +28,10 @@ function buildAgent(config: ModelConfig) {
   });
   const tools = new ToolRegistry()
     .register(createClockTool())
-    .register(createCalculatorTool());
+    .register(createCalculatorTool())
+    .register(createDocumentReadTool())
+    .register(createDocumentEditTool())
+    .register(createShellTool());
   return new Agent({
     model,
     tools,

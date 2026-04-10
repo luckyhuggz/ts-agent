@@ -1,4 +1,13 @@
-import type { DesktopHttpRequest, DesktopHttpResponse } from "@/electron.d";
+import type {
+  DesktopDocumentReadRequest,
+  DesktopDocumentReadResponse,
+  DesktopDocumentWriteRequest,
+  DesktopDocumentWriteResponse,
+  DesktopHttpRequest,
+  DesktopHttpResponse,
+  DesktopShellCommandRequest,
+  DesktopShellCommandResponse,
+} from "@/electron.d";
 
 export interface HttpResponseLike {
   ok: boolean;
@@ -35,6 +44,48 @@ export async function httpFetch(url: string, init: RequestInit = {}): Promise<Ht
   }
 
   return globalThis.fetch(url, init);
+}
+
+export async function readDocumentFile(filePath: string): Promise<DesktopDocumentReadResponse> {
+  const request: DesktopDocumentReadRequest = { filePath };
+
+  if (typeof window === "undefined" || !window.desktop?.readDocument) {
+    throw new Error("Document reading is only available in the Electron desktop app.");
+  }
+
+  return window.desktop.readDocument(request);
+}
+
+export async function writeDocumentFile(
+  filePath: string,
+  options: {
+    content?: string;
+    oldString?: string;
+    newString?: string;
+    replaceAll?: boolean;
+  },
+): Promise<DesktopDocumentWriteResponse> {
+  const request: DesktopDocumentWriteRequest = { filePath, ...options };
+
+  if (typeof window === "undefined" || !window.desktop?.writeDocument) {
+    throw new Error("Document writing is only available in the Electron desktop app.");
+  }
+
+  return window.desktop.writeDocument(request);
+}
+
+export async function runShellCommand(options: {
+  command: string;
+  cwd?: string;
+  timeoutMs?: number;
+}): Promise<DesktopShellCommandResponse> {
+  const request: DesktopShellCommandRequest = options;
+
+  if (typeof window === "undefined" || !window.desktop?.runShellCommand) {
+    throw new Error("Shell commands are only available in the Electron desktop app.");
+  }
+
+  return window.desktop.runShellCommand(request);
 }
 
 function toDesktopRequest(url: string, init: RequestInit): DesktopHttpRequest {

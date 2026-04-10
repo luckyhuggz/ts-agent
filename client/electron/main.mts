@@ -1,6 +1,9 @@
 import { app, BrowserWindow, ipcMain, shell } from "electron";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readDocumentFile, type DesktopDocumentReadRequest, type DesktopDocumentReadResponse } from "./document-reader.mjs";
+import { runShellCommand, type DesktopShellCommandRequest, type DesktopShellCommandResponse } from "./shell-command.mjs";
+import { writeDocumentFile, type DesktopDocumentWriteRequest, type DesktopDocumentWriteResponse } from "./document-writer.mjs";
 
 interface DesktopHttpRequest {
   url: string;
@@ -16,7 +19,6 @@ interface DesktopHttpResponse {
   headers: Record<string, string>;
   body: string;
 }
-
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rendererUrl = process.env.ELECTRON_RENDERER_URL ?? "http://localhost:1420";
 
@@ -77,6 +79,21 @@ function registerHttpBridge() {
       body: await response.text(),
     };
 
+    return payload;
+  });
+
+  ipcMain.handle("desktop:read-document", async (_event, request: DesktopDocumentReadRequest) => {
+    const payload: DesktopDocumentReadResponse = await readDocumentFile(request);
+    return payload;
+  });
+
+  ipcMain.handle("desktop:write-document", async (_event, request: DesktopDocumentWriteRequest) => {
+    const payload: DesktopDocumentWriteResponse = await writeDocumentFile(request);
+    return payload;
+  });
+
+  ipcMain.handle("desktop:run-shell-command", async (_event, request: DesktopShellCommandRequest) => {
+    const payload: DesktopShellCommandResponse = await runShellCommand(request);
     return payload;
   });
 }

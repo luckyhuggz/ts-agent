@@ -1,6 +1,9 @@
 import { app, BrowserWindow, ipcMain, shell } from "electron";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readDocumentFile } from "./document-reader.mjs";
+import { runShellCommand } from "./shell-command.mjs";
+import { writeDocumentFile } from "./document-writer.mjs";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rendererUrl = process.env.ELECTRON_RENDERER_URL ?? "http://localhost:1420";
 function isSafeAppUrl(url) {
@@ -53,6 +56,18 @@ function registerHttpBridge() {
             headers: Object.fromEntries(response.headers.entries()),
             body: await response.text(),
         };
+        return payload;
+    });
+    ipcMain.handle("desktop:read-document", async (_event, request) => {
+        const payload = await readDocumentFile(request);
+        return payload;
+    });
+    ipcMain.handle("desktop:write-document", async (_event, request) => {
+        const payload = await writeDocumentFile(request);
+        return payload;
+    });
+    ipcMain.handle("desktop:run-shell-command", async (_event, request) => {
+        const payload = await runShellCommand(request);
         return payload;
     });
 }
