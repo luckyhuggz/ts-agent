@@ -1,6 +1,8 @@
 import type {
   ChatHistoryMessage,
   ChatSessionSummary,
+  DesktopDocumentPatchRequest,
+  DesktopDocumentPatchResponse,
   CreateChatSessionRequest,
   DesktopDocumentReadRequest,
   DesktopDocumentReadResponse,
@@ -163,6 +165,16 @@ export async function writeDocumentFile(
   }
 
   return window.desktop.writeDocument(request);
+}
+
+export async function applyDocumentPatch(patch: string): Promise<DesktopDocumentPatchResponse> {
+  const request: DesktopDocumentPatchRequest = { patch };
+
+  if (typeof window === "undefined" || !window.desktop?.applyDocumentPatch) {
+    throw new Error("Document patching is only available in the Electron desktop app.");
+  }
+
+  return window.desktop.applyDocumentPatch(request);
 }
 
 export async function runShellCommand(options: {

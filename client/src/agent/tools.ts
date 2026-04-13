@@ -1,5 +1,6 @@
 import type { ToolCall, ToolDefinition } from "./types";
 import {
+  applyDocumentPatch,
   importSkill,
   listSkills,
   loadSkill,
@@ -117,15 +118,11 @@ export class ToolRegistry {
       return {
         toolCall,
         ok: false,
-        result: `Tool arguments for "${toolCall.name}" could not be parsed. ${toolCall.argumentsParseError}`,
+        result: buildToolArgumentParseError(toolCall),
       };
     }
 
     try {
-      console.log('toolCall', toolCall);
-      console.log('toolCall.arguments', toolCall.arguments);
-      console.log('context', context);
-      
       const result = await tool.execute(toolCall.arguments, context);
       return { toolCall, ok: true, result };
     } catch (error) {
@@ -284,7 +281,7 @@ export function createDocumentWriteTool(): Tool<{
     definition: {
       name: "write_document_content",
       description:
-        "Create or overwrite a local .txt, .md, .html, or .docx file with complete content. Use this for short or medium files. For large file bodies, especially long HTML, do not send the whole file in tool JSON arguments; use the lucky-file assistant block strategy from the system instructions.",
+        "Create or overwrite a local .txt, .md, .html, or .docx file with complete content. Use this for short or medium files. For large file creation, prefer apply_patch_document first. Only fall back to lucky-file blocks if patch output is not practical.",
       inputSchema: {
         type: "object",
         properties: {
@@ -337,7 +334,7 @@ export function createDocumentEditTool(): Tool<{
     definition: {
       name: "edit_document_content",
       description:
-        "Edit an existing local document. For .txt/.md/.html files, use oldString/newString replacement. For .docx files, only use complete content overwrite. Do not use this tool to send a very large whole HTML file body in JSON arguments.",
+        "Edit an existing local document. For .txt/.md/.html files, use oldString/newString replacement for small targeted edits. For .docx files, only use complete content overwrite. For large edits, prefer apply_patch_document.",
       inputSchema: {
         type: "object",
         properties: {
@@ -381,6 +378,68 @@ export function createDocumentEditTool(): Tool<{
       return result;
     },
   };
+}
+
+export function createDocumentPatchTool(): Tool<{
+  applied: number;
+  files: Array<{
+    filePath: string;
+    fileName: string;
+    extension: string;
+    action: "add" | "update";
+    charCount: number;
+  }>;
+}> {
+  return {
+    definition: {
+      name: "apply_patch_document",
+      description:
+        "Apply a structured patch to .txt, .md, or .html files. Prefer this for large edits to existing files, or moderate file creation. Supported operations are *** Add File and *** Update File inside a *** Begin Patch / *** End Patch block. If a brand-new file body is very large, prefer lucky-file fallback instead of sending a huge patch JSON payload.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          patch: {
+            type: "string",
+            description:
+              "Structured patch text. Example: *** Begin Patch\\n*** Add File: demo.html\\n+<html>\\n*** End Patch",
+          },
+        },
+        required: ["patch"],
+        additionalProperties: false,
+      },
+    },
+    async execute(args) {
+      const patch = typeof args.patch === "string" ? args.patch : String(args.patch ?? "");
+      if (!patch.trim()) {
+        throw new Error("patch is required");
+      }
+
+      return applyDocumentPatch(patch);
+    },
+  };
+}
+
+function buildToolArgumentParseError(toolCall: ToolCall): string {
+  const baseMessage = `Tool arguments for "${toolCall.name}" could not be parsed. ${toolCall.argumentsParseError}`;
+
+  if (toolCall.name === "apply_patch_document") {
+    return [
+      baseMessage,
+      'Recovery strategy: if you are creating a very large new file, do not send the whole body inside apply_patch_document JSON.',
+      'Use <lucky-file path="...">...</lucky-file> blocks for very large whole-file generation.',
+      "If you are editing an existing file, retry apply_patch_document with smaller hunks or multiple smaller patch calls.",
+    ].join(" ");
+  }
+
+  if (toolCall.name === "write_document_content" || toolCall.name === "edit_document_content") {
+    return [
+      baseMessage,
+      "Recovery strategy: for very large whole-file content, avoid large tool JSON payloads.",
+      'Use apply_patch_document for large edits, or <lucky-file path="...">...</lucky-file> as a fallback for very large generated files.',
+    ].join(" ");
+  }
+
+  return baseMessage;
 }
 
 /**

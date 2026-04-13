@@ -113,7 +113,7 @@ export class Agent {
         tools: this.tools?.getDefinitions() ?? [],
         systemPrompt,
         maxTokens: options.maxTokens,
-        temperature: options.temperature,
+        // temperature: options.temperature,
         signal: options.signal,
         messageId: assistantMessageId,
         step,
@@ -273,7 +273,7 @@ async function generateAssistantTurn(params: {
       tools: params.tools,
       systemPrompt: params.systemPrompt,
       maxTokens: params.maxTokens,
-      temperature: params.temperature,
+      temperature: 1,
       signal: params.signal,
       onTextDelta: (delta) => {
         streamed = true;

@@ -49,6 +49,23 @@ export interface DesktopDocumentWriteResponse {
   replacedCount: number;
 }
 
+export interface DesktopDocumentPatchRequest {
+  patch: string;
+}
+
+export interface DesktopDocumentPatchFileResponse {
+  filePath: string;
+  fileName: string;
+  extension: string;
+  action: "add" | "update";
+  charCount: number;
+}
+
+export interface DesktopDocumentPatchResponse {
+  applied: number;
+  files: DesktopDocumentPatchFileResponse[];
+}
+
 export interface DesktopShellCommandRequest {
   command: string;
   cwd?: string;
@@ -156,6 +173,7 @@ declare global {
       abortHttpRequestStream: (streamId: string) => void;
       readDocument: (request: DesktopDocumentReadRequest) => Promise<DesktopDocumentReadResponse>;
       writeDocument: (request: DesktopDocumentWriteRequest) => Promise<DesktopDocumentWriteResponse>;
+      applyDocumentPatch: (request: DesktopDocumentPatchRequest) => Promise<DesktopDocumentPatchResponse>;
       runShellCommand: (request: DesktopShellCommandRequest) => Promise<DesktopShellCommandResponse>;
       getWorkspaceInfo: () => Promise<WorkspaceInfo>;
       setWorkspace: (workspaceDir: string) => Promise<WorkspaceInfo>;

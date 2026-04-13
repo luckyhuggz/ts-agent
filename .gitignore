@@ -4,3 +4,5 @@ node_modules
 client/release/
 docs/claudeagent-system-docs/src
 refer-tools/
+client/dist-electron/
+dist-electron/

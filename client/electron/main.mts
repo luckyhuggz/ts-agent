@@ -13,6 +13,11 @@ import {
 } from "./history.mjs";
 import { readDocumentFile, type DesktopDocumentReadRequest, type DesktopDocumentReadResponse } from "./document-reader.mjs";
 import {
+  applyDocumentPatch,
+  type DesktopDocumentPatchRequest,
+  type DesktopDocumentPatchResponse,
+} from "./document-patch.mjs";
+import {
   importSkill,
   listSkills,
   loadSkill,
@@ -188,6 +193,11 @@ function registerHttpBridge() {
 
   ipcMain.handle("desktop:write-document", async (_event, request: DesktopDocumentWriteRequest) => {
     const payload: DesktopDocumentWriteResponse = await writeDocumentFile(request);
+    return payload;
+  });
+
+  ipcMain.handle("desktop:apply-document-patch", async (_event, request: DesktopDocumentPatchRequest) => {
+    const payload: DesktopDocumentPatchResponse = await applyDocumentPatch(request);
     return payload;
   });
 

@@ -51,6 +51,23 @@ interface DesktopDocumentWriteResponse {
   replacedCount: number;
 }
 
+interface DesktopDocumentPatchRequest {
+  patch: string;
+}
+
+interface DesktopDocumentPatchFileResponse {
+  filePath: string;
+  fileName: string;
+  extension: string;
+  action: "add" | "update";
+  charCount: number;
+}
+
+interface DesktopDocumentPatchResponse {
+  applied: number;
+  files: DesktopDocumentPatchFileResponse[];
+}
+
 interface DesktopShellCommandRequest {
   command: string;
   cwd?: string;
@@ -202,6 +219,9 @@ contextBridge.exposeInMainWorld("desktop", {
   },
   writeDocument(request: DesktopDocumentWriteRequest): Promise<DesktopDocumentWriteResponse> {
     return ipcRenderer.invoke("desktop:write-document", request);
+  },
+  applyDocumentPatch(request: DesktopDocumentPatchRequest): Promise<DesktopDocumentPatchResponse> {
+    return ipcRenderer.invoke("desktop:apply-document-patch", request);
   },
   runShellCommand(request: DesktopShellCommandRequest): Promise<DesktopShellCommandResponse> {
     return ipcRenderer.invoke("desktop:run-shell-command", request);

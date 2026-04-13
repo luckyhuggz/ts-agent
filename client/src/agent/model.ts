@@ -143,7 +143,7 @@ export class OpenAICompatibleChatModel implements ChatModel {
     };
     const requestBody = {
       model: this.model,
-      temperature: params.temperature ?? 0.2,
+      temperature: 1,
       max_tokens: safeMaxTokens,
       messages: toOpenAIMessages(params.messages, params.systemPrompt),
       tools: params.tools.map(toOpenAITool),

@@ -31,6 +31,7 @@ import {
   createCalculatorTool,
   createClockTool,
   createDocumentEditTool,
+  createDocumentPatchTool,
   createDocumentReadTool,
   createDocumentWriteTool,
   createImportSkillTool,
@@ -53,6 +54,7 @@ function buildAgent(config: ModelConfig) {
     .register(createDocumentReadTool())
     .register(createDocumentWriteTool())
     .register(createDocumentEditTool())
+    .register(createDocumentPatchTool())
     .register(createShellTool())
     .register(createListSkillsTool())
     .register(createLoadSkillTool())
@@ -586,17 +588,21 @@ function buildRuntimeSystemPrompt(basePrompt: string, workspaceDir: string, skil
     [
       "File Writing Strategy:",
       "- For small or medium complete files, use write_document_content.",
-      "- For targeted edits to existing .txt/.md/.html files, use read_document_content first and then use edit_document_content with oldString/newString.",
+      "- For targeted small edits to existing .txt/.md/.html files, use read_document_content first and then use edit_document_content with oldString/newString.",
+      "- For large edits to existing .txt/.md/.html files, prefer apply_patch_document.",
+      "- For very large brand-new file generation, especially long HTML, Markdown, or plain text, prefer lucky-file blocks instead of a huge apply_patch_document JSON payload.",
       "- For .docx files, only use complete content overwrite.",
-      "- For large file bodies, especially long HTML, CSS, JS, Markdown, or long text, DO NOT put the entire file body into tool JSON arguments.",
-      "- Instead, emit one or more assistant file blocks using this exact format:",
+      "- apply_patch_document supports a patch block with *** Begin Patch / *** End Patch, and operations like *** Add File or *** Update File.",
+      "- apply_patch_document is best for existing-file edits or moderate file creation. Do not wrap an extremely large whole-file body in one patch JSON string.",
+      "- Do not send a very large whole file body to write_document_content or edit_document_content.",
+      "- If apply_patch_document is not practical or the response is at risk of being cut off, fall back to assistant lucky-file blocks using this exact format:",
       '  <lucky-file path="relative/or/absolute/file.html" mode="overwrite">',
       "  ...raw file content here...",
       "  </lucky-file>",
       "- For very large text files, you may continue the same file with mode=\"append\" in later lucky-file blocks.",
-      "- When a file is large, prefer multiple lucky-file blocks instead of one extremely large block: first use mode=\"overwrite\", then continue with mode=\"append\".",
+      "- lucky-file is the preferred fallback for very large whole-file generation.",
       "- Keep each lucky-file block reasonably sized so the model can finish each block and close it reliably.",
-      "- The app will automatically persist lucky-file blocks to disk after generation, so this strategy is preferred for long outputs.",
+      "- The app will automatically persist lucky-file blocks to disk after generation.",
     ].join("\n"),
     renderSkillsPrompt(skills),
   ].filter(Boolean);
