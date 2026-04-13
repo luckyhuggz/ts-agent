@@ -51,6 +51,17 @@ export class ConversationMemory {
   }
 
   /**
+   * 用一组完整历史替换当前记忆。
+   *
+   * 调用方：
+   * - 历史会话切换后恢复 Agent 上下文。
+   */
+  replace(messages: AgentMessage[]): void {
+    this.messages.length = 0;
+    this.messages.push(...messages);
+  }
+
+  /**
    * 返回当前所有消息的浅拷贝。
    *
    * 设计目的：

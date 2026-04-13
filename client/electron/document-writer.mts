@@ -1,10 +1,12 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, resolve } from "node:path";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, extname } from "node:path";
 import { Document, Packer, Paragraph, TextRun } from "docx";
+import { resolveWorkspacePath } from "./workspace.mjs";
 
 export interface DesktopDocumentWriteRequest {
   filePath: string;
   content?: string;
+  appendContent?: string;
   oldString?: string;
   newString?: string;
   replaceAll?: boolean;
@@ -19,7 +21,7 @@ export interface DesktopDocumentWriteResponse {
   replacedCount: number;
 }
 
-const SUPPORTED_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".docx"]);
+const SUPPORTED_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".html", ".htm", ".docx"]);
 
 export async function writeDocumentFile(
   request: DesktopDocumentWriteRequest,
@@ -29,17 +31,21 @@ export async function writeDocumentFile(
     throw new Error("filePath is required.");
   }
 
-  const resolvedPath = resolve(inputPath);
+  const resolvedPath = resolveWorkspacePath(inputPath);
   const extension = extname(resolvedPath).toLowerCase();
   if (!SUPPORTED_EXTENSIONS.has(extension)) {
-    throw new Error(`Unsupported file type "${extension || "unknown"}". Supported: .txt, .md, .docx`);
+    throw new Error(`Unsupported file type "${extension || "unknown"}". Supported: .txt, .md, .html, .docx`);
   }
 
   await mkdir(dirname(resolvedPath), { recursive: true });
 
   if (extension === ".docx") {
-    if (request.oldString !== undefined || request.newString !== undefined) {
-      throw new Error("docx only supports full content overwrite. Use the content field instead of oldString/newString.");
+    if (
+      request.oldString !== undefined ||
+      request.newString !== undefined ||
+      request.appendContent !== undefined
+    ) {
+      throw new Error("docx only supports full content overwrite. Use the content field instead of oldString/newString or appendContent.");
     }
 
     const content = normalizeContent(String(request.content ?? ""));
@@ -52,7 +58,7 @@ export async function writeDocumentFile(
         ],
       }),
     );
-    await writeFile(resolvedPath, buffer);
+    await atomicWriteFile(resolvedPath, buffer);
 
     return {
       filePath: resolvedPath,
@@ -66,6 +72,30 @@ export async function writeDocumentFile(
 
   const oldString = request.oldString;
   const newString = request.newString;
+  const appendContent = request.appendContent;
+
+  if (appendContent !== undefined) {
+    if (oldString !== undefined || newString !== undefined) {
+      throw new Error("appendContent cannot be combined with oldString/newString.");
+    }
+
+    const normalizedAppendContent = normalizeContent(appendContent);
+    await writeFile(resolvedPath, normalizedAppendContent, {
+      encoding: "utf8",
+      flag: "a",
+    });
+
+    const finalContent = normalizeContent(await readFile(resolvedPath, "utf8"));
+    return {
+      filePath: resolvedPath,
+      fileName: basename(resolvedPath),
+      extension,
+      charCount: finalContent.length,
+      mode: "overwrite",
+      replacedCount: 0,
+    };
+  }
+
   if (oldString !== undefined || newString !== undefined) {
     if (typeof oldString !== "string" || typeof newString !== "string") {
       throw new Error("oldString and newString must both be provided for text replacement.");
@@ -81,7 +111,7 @@ export async function writeDocumentFile(
       throw new Error("oldString was not found in the document.");
     }
 
-    await writeFile(resolvedPath, content, "utf8");
+    await atomicWriteFile(resolvedPath, content, "utf8");
     return {
       filePath: resolvedPath,
       fileName: basename(resolvedPath),
@@ -92,7 +122,7 @@ export async function writeDocumentFile(
     };
   } else {
     const content = normalizeContent(String(request.content ?? ""));
-    await writeFile(resolvedPath, content, "utf8");
+    await atomicWriteFile(resolvedPath, content, "utf8");
 
     return {
       filePath: resolvedPath,
@@ -107,6 +137,32 @@ export async function writeDocumentFile(
 
 function normalizeContent(content: string): string {
   return content.replace(/\r\n?/g, "\n");
+}
+
+async function atomicWriteFile(
+  targetPath: string,
+  content: string | Uint8Array,
+  encoding?: BufferEncoding,
+): Promise<void> {
+  const tempPath = `${targetPath}.tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  try {
+    if (typeof content === "string") {
+      await writeFile(tempPath, content, encoding ?? "utf8");
+    } else {
+      await writeFile(tempPath, content);
+    }
+
+    try {
+      await rename(tempPath, targetPath);
+    } catch {
+      await rm(targetPath, { force: true });
+      await rename(tempPath, targetPath);
+    }
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 function toDocxParagraphs(content: string): Paragraph[] {

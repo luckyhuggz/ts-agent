@@ -1,4 +1,5 @@
 import { ConversationMemory } from "./memory";
+import { applyAssistantFileWriteBlocks } from "./file-write-blocks";
 import type { ChatModel } from "./model";
 import type { ToolRegistry } from "./tools";
 import type { AgentMessage, AgentRunOptions, AgentRunResult } from "./types";
@@ -86,32 +87,65 @@ export class Agent {
    */
   async run(input: string, options: AgentRunOptions = {}): Promise<AgentRunResult> {
     /** 最大推理轮数，避免模型反复请求工具导致无限循环。 */
-    const maxSteps = options.maxSteps ?? 8;
+    const maxSteps = options.maxSteps ?? 20;
     /** 优先使用本次调用显式传入的系统提示词，否则回退到构造时的默认值。 */
     const systemPrompt = options.systemPrompt ?? this.defaultSystemPrompt;
 
     // 第一步：先把用户输入加入记忆。后续模型看到的是完整上下文而不是单条消息。
-    this.memory.add({ role: "user", content: input });
+    this.memory.add({
+      id: createMessageId("user"),
+      role: "user",
+      content: input,
+    });
 
     // 从第 1 步开始迭代，直到模型给出最终答案或超过上限。
     for (let step = 1; step <= maxSteps; step += 1) {
-      // 每轮都把当前完整上下文、可用工具定义和生成参数交给模型。
-      const result = await this.model.generate({
-        messages: this.memory.all(),
+      const assistantMessageId = createMessageId(`assistant-${step}`);
+      options.onEvent?.({
+        type: "assistant_step_start",
+        step,
+        messageId: assistantMessageId,
+      });
+
+      const result = await generateAssistantTurn({
+        model: this.model,
+        baseMessages: this.memory.all(),
         tools: this.tools?.getDefinitions() ?? [],
         systemPrompt,
         maxTokens: options.maxTokens,
         temperature: options.temperature,
+        signal: options.signal,
+        messageId: assistantMessageId,
+        step,
+        onEvent: options.onEvent,
       });
 
+      const assistantMessage: AgentMessage = {
+        role: "assistant",
+        id: assistantMessageId,
+        content: result.content,
+        toolCalls: result.toolCalls,
+      };
+
+      const assistantFileWrites = await applyAssistantFileWriteBlocks(assistantMessage.content);
+      if (assistantFileWrites.applied) {
+        assistantMessage.content = assistantFileWrites.cleanedContent;
+      }
+
       // 模型返回的 assistant 消息先写入记忆，后面 UI 和下一轮推理都会用到。
-      this.memory.add(result.message);
+      this.memory.add(assistantMessage);
+      options.onEvent?.({
+        type: "assistant_message_complete",
+        step,
+        messageId: assistantMessageId,
+        message: assistantMessage,
+      });
 
       // 如果这一轮没有工具调用，说明模型已经给出最终自然语言答复，可以直接结束。
-      const toolCalls = result.message.toolCalls ?? [];
+      const toolCalls = assistantMessage.toolCalls ?? [];
       if (toolCalls.length === 0) {
         return {
-          output: result.message.content,
+          output: assistantMessage.content,
           steps: step,
           messages: this.memory.all(),
         };
@@ -126,13 +160,20 @@ export class Agent {
       const toolMessages: AgentMessage[] = [];
       for (const toolCall of toolCalls) {
         // 调用 `ToolRegistry.execute()` 按工具名分发执行。
-        const execution = await this.tools.execute(toolCall);
-        toolMessages.push({
+        const execution = await this.tools.execute(toolCall, { signal: options.signal });
+        const toolMessage: AgentMessage = {
+          id: createMessageId(`tool-${toolCall.name}`),
           role: "tool",
           name: toolCall.name,
           toolCallId: toolCall.id,
           // 这里把工具执行结果序列化成 JSON 字符串，供下轮模型继续理解和引用。
           content: JSON.stringify({ ok: execution.ok, result: execution.result }, null, 2),
+        };
+        toolMessages.push(toolMessage);
+        options.onEvent?.({
+          type: "tool_message",
+          step,
+          message: toolMessage,
         });
       }
 
@@ -158,6 +199,13 @@ export class Agent {
   }
 
   /**
+   * 用已有会话历史恢复当前 Agent 上下文。
+   */
+  loadHistory(messages: AgentMessage[]): void {
+    this.memory.replace(messages);
+  }
+
+  /**
    * 清空当前会话历史。
    *
    * 调用方：
@@ -169,4 +217,140 @@ export class Agent {
   reset(): void {
     this.memory.clear();
   }
+}
+
+function createMessageId(prefix: string): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+async function generateAssistantTurn(params: {
+  model: ChatModel;
+  baseMessages: AgentMessage[];
+  tools: ReturnType<ToolRegistry["getDefinitions"]>;
+  systemPrompt?: string;
+  maxTokens?: number;
+  temperature?: number;
+  signal?: AbortSignal;
+  messageId: string;
+  step: number;
+  onEvent?: AgentRunOptions["onEvent"];
+}): Promise<{
+  content: string;
+  toolCalls: NonNullable<AgentMessage["toolCalls"]>;
+  finishReason: string;
+}> {
+  const maxContinuations = 8;
+  let aggregatedContent = "";
+  let finishReason: string = "unknown";
+  let toolCalls: NonNullable<AgentMessage["toolCalls"]> = [];
+
+  for (let continuationIndex = 0; continuationIndex < maxContinuations; continuationIndex += 1) {
+    const requestMessages =
+      continuationIndex === 0
+        ? params.baseMessages
+        : [
+            ...params.baseMessages,
+            {
+              role: "assistant" as const,
+              content: aggregatedContent,
+            },
+            {
+              role: "user" as const,
+              content: buildContinuationPrompt(aggregatedContent),
+            },
+          ];
+
+    const baseContent = aggregatedContent;
+    let currentCallContent = "";
+    let streamed = false;
+
+    const result = await params.model.generate({
+      messages: requestMessages,
+      tools: params.tools,
+      systemPrompt: params.systemPrompt,
+      maxTokens: params.maxTokens,
+      temperature: params.temperature,
+      signal: params.signal,
+      onTextDelta: (delta) => {
+        streamed = true;
+        currentCallContent += delta;
+        const mergedContent = mergeContinuationContent(baseContent, currentCallContent);
+        params.onEvent?.({
+          type: "assistant_text_delta",
+          step: params.step,
+          messageId: params.messageId,
+          delta,
+          content: mergedContent,
+        });
+      },
+    });
+
+    if (!streamed && result.message.content) {
+      currentCallContent = result.message.content;
+      const mergedContent = mergeContinuationContent(baseContent, currentCallContent);
+      params.onEvent?.({
+        type: "assistant_text_delta",
+        step: params.step,
+        messageId: params.messageId,
+        delta: result.message.content,
+        content: mergedContent,
+      });
+    }
+
+    aggregatedContent = mergeContinuationContent(baseContent, currentCallContent || result.message.content || "");
+    toolCalls = result.message.toolCalls ?? [];
+    finishReason = result.finishReason;
+
+    if (toolCalls.length > 0) {
+      break;
+    }
+
+    if (result.finishReason !== "length") {
+      break;
+    }
+  }
+
+  return {
+    content: aggregatedContent,
+    toolCalls,
+    finishReason,
+  };
+}
+
+function buildContinuationPrompt(currentContent: string): string {
+  const openTagCount = (currentContent.match(/<lucky-file\b/gi) ?? []).length;
+  const closeTagCount = (currentContent.match(/<\/lucky-file>/gi) ?? []).length;
+  const hasOpenLuckyFile = openTagCount > closeTagCount;
+
+  return hasOpenLuckyFile
+    ? [
+        "Continue exactly from where you stopped.",
+        "You are inside a <lucky-file> block.",
+        "Do not repeat any previous text.",
+        "Continue only the remaining raw file content, then close the block with </lucky-file> when finished.",
+      ].join(" ")
+    : [
+        "Continue exactly from where you stopped.",
+        "Do not repeat any previous text.",
+      ].join(" ");
+}
+
+function mergeContinuationContent(existing: string, incoming: string): string {
+  if (!incoming) return existing;
+  if (!existing) return incoming;
+  if (existing.endsWith(incoming)) return existing;
+  if (incoming.startsWith(existing)) return incoming;
+
+  const maxOverlap = Math.min(existing.length, incoming.length, 4000);
+  for (let size = maxOverlap; size > 0; size -= 1) {
+    if (existing.slice(-size) === incoming.slice(0, size)) {
+      return `${existing}${incoming.slice(size)}`;
+    }
+  }
+
+  return `${existing}${incoming}`;
 }

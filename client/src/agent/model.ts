@@ -5,7 +5,7 @@ import type {
   ToolCall,
   ToolDefinition,
 } from "./types";
-import { httpFetch } from "@/lib/desktop";
+import { httpFetch, httpFetchStream } from "@/lib/desktop";
 
 /**
  * 模型抽象接口。
@@ -51,6 +51,25 @@ interface OpenAIChatCompletionResponse {
       role?: string;
       content?: string | Array<{ type: string; text?: string }>;
       tool_calls?: Array<{
+        id?: string;
+        type?: string;
+        function?: {
+          name?: string;
+          arguments?: string;
+        };
+      }>;
+    };
+  }>;
+}
+
+interface OpenAIChatCompletionChunk {
+  choices?: Array<{
+    finish_reason?: string | null;
+    delta?: {
+      role?: string;
+      content?: string | Array<{ type: string; text?: string }>;
+      tool_calls?: Array<{
+        index?: number;
         id?: string;
         type?: string;
         function?: {
@@ -116,31 +135,58 @@ export class OpenAICompatibleChatModel implements ChatModel {
    * - 原始响应 raw，便于后续调试。
    */
   async generate(params: ModelGenerateParams): Promise<ModelGenerateResult> {
-    // 使用 OpenAI 兼容的 `/chat/completions` 接口；Electron 环境下该请求由主进程代理。
+    const safeMaxTokens = normalizeMaxTokensForModel(this.model, params.maxTokens);
+    const requestHeaders = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${this.apiKey}`,
+      ...this.extraHeaders,
+    };
+    const requestBody = {
+      model: this.model,
+      temperature: params.temperature ?? 0.2,
+      max_tokens: safeMaxTokens,
+      messages: toOpenAIMessages(params.messages, params.systemPrompt),
+      tools: params.tools.map(toOpenAITool),
+      tool_choice: params.tools.length > 0 ? "auto" : undefined,
+    };
+
+    try {
+      return await this.generateStream({
+        ...params,
+        requestHeaders,
+        requestBody,
+      });
+    } catch (error) {
+      if (!shouldFallbackToNonStreaming(error)) {
+        throw error;
+      }
+
+      return this.generateNonStreaming({
+        ...params,
+        requestHeaders,
+        requestBody,
+      });
+    }
+  }
+
+  private async generateNonStreaming(
+    params: ModelGenerateParams & {
+      requestHeaders: Record<string, string>;
+      requestBody: Record<string, unknown>;
+    },
+  ): Promise<ModelGenerateResult> {
     const response = await httpFetch(`${this.baseURL}/chat/completions`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-        ...this.extraHeaders,
-      },
-      body: JSON.stringify({
-        model: this.model,
-        temperature: params.temperature ?? 0.2,
-        max_tokens: params.maxTokens,
-        messages: toOpenAIMessages(params.messages, params.systemPrompt),
-        tools: params.tools.map(toOpenAITool),
-        tool_choice: params.tools.length > 0 ? "auto" : undefined,
-      }),
+      headers: params.requestHeaders,
+      body: JSON.stringify(params.requestBody),
+      signal: params.signal,
     });
 
-    // 非 2xx 直接抛错，把服务端原文带出去，方便前端错误提示。
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`Model request failed (${response.status}): ${text}`);
     }
 
-    // 当前实现只读取第一条 choice。
     const data = (await response.json()) as OpenAIChatCompletionResponse;
     const choice = data.choices?.[0];
     const message = choice?.message;
@@ -149,21 +195,131 @@ export class OpenAICompatibleChatModel implements ChatModel {
       throw new Error("Model response did not include a message.");
     }
 
-    // 把 OpenAI 的 tool_calls 转成框架内部统一的 ToolCall 结构。
-    const toolCalls = (message.tool_calls ?? []).map((call, index) => ({
-      id: call.id ?? `tool_${index}`,
-      name: call.function?.name ?? "unknown_tool",
-      arguments: safeParseArgs(call.function?.arguments),
-    }));
+    const content = normalizeContent(message.content);
+    if (content) {
+      params.onTextDelta?.(content);
+    }
+
+    const toolCalls = (message.tool_calls ?? []).map((call, index) => {
+      const parsedArgs = parseToolArguments(call.function?.arguments, choice?.finish_reason);
+      return {
+        id: call.id ?? `tool_${index}`,
+        name: call.function?.name ?? "unknown_tool",
+        arguments: parsedArgs.arguments,
+        rawArguments: call.function?.arguments,
+        argumentsParseError: parsedArgs.error,
+      };
+    });
 
     return {
       message: {
         role: "assistant",
-        content: normalizeContent(message.content),
+        content,
         toolCalls,
       },
       finishReason: normalizeFinishReason(choice?.finish_reason, toolCalls),
       raw: data,
+    };
+  }
+
+  private async generateStream(
+    params: ModelGenerateParams & {
+      requestHeaders: Record<string, string>;
+      requestBody: Record<string, unknown>;
+    },
+  ): Promise<ModelGenerateResult> {
+    let buffer = "";
+    let content = "";
+    let finishReason: string | null | undefined;
+    const toolCallStates: Array<{
+      id?: string;
+      name?: string;
+      argumentsText: string;
+    }> = [];
+
+    await httpFetchStream(
+      `${this.baseURL}/chat/completions`,
+      {
+        method: "POST",
+        headers: params.requestHeaders,
+        body: JSON.stringify({
+          ...params.requestBody,
+          stream: true,
+        }),
+        signal: params.signal,
+      },
+      {
+        onChunk: (chunk) => {
+          buffer += chunk;
+          const consumed = consumeSseBuffer(buffer, (payload) => {
+            const choice = payload.choices?.[0];
+            if (!choice) return;
+
+            finishReason = choice.finish_reason ?? finishReason;
+            const delta = choice.delta;
+            const nextText = normalizeContent(delta?.content);
+
+            if (nextText) {
+              content += nextText;
+              params.onTextDelta?.(nextText);
+            }
+
+            for (const toolCall of delta?.tool_calls ?? []) {
+              const index = toolCall.index ?? 0;
+              const current =
+                toolCallStates[index] ??
+                (toolCallStates[index] = {
+                  id: `tool_${index}`,
+                  name: "unknown_tool",
+                  argumentsText: "",
+                });
+
+              if (toolCall.id) {
+                current.id = toolCall.id;
+              }
+              if (toolCall.function?.name) {
+                current.name = toolCall.function.name;
+              }
+              if (toolCall.function?.arguments) {
+                current.argumentsText += toolCall.function.arguments;
+              }
+            }
+          });
+
+          buffer = buffer.slice(consumed);
+        },
+      },
+    );
+
+    if (buffer.trim()) {
+      consumeSseBuffer(buffer, (payload) => {
+        const choice = payload.choices?.[0];
+        if (!choice) return;
+
+        finishReason = choice.finish_reason ?? finishReason;
+      }, true);
+    }
+
+    const toolCalls = toolCallStates
+      .filter((toolCall): toolCall is NonNullable<typeof toolCall> => Boolean(toolCall))
+      .map((toolCall, index) => {
+        const parsedArgs = parseToolArguments(toolCall.argumentsText, finishReason);
+        return {
+          id: toolCall.id ?? `tool_${index}`,
+          name: toolCall.name ?? "unknown_tool",
+          arguments: parsedArgs.arguments,
+          rawArguments: toolCall.argumentsText,
+          argumentsParseError: parsedArgs.error,
+        };
+      });
+
+    return {
+      message: {
+        role: "assistant",
+        content,
+        toolCalls,
+      },
+      finishReason: normalizeFinishReason(finishReason, toolCalls),
     };
   }
 }
@@ -254,6 +410,67 @@ function normalizeContent(
   return "";
 }
 
+function normalizeMaxTokensForModel(model: string, maxTokens?: number): number | undefined {
+  if (typeof maxTokens !== "number" || !Number.isFinite(maxTokens)) {
+    return undefined;
+  }
+
+  const normalized = Math.max(1, Math.floor(maxTokens));
+  const normalizedModel = model.trim().toLowerCase();
+
+  if (normalizedModel === "deepseek-chat") {
+    return Math.min(normalized, 8192);
+  }
+
+  return normalized;
+}
+
+function consumeSseBuffer(
+  buffer: string,
+  onPayload: (payload: OpenAIChatCompletionChunk) => void,
+  flush = false,
+): number {
+  let offset = 0;
+
+  while (true) {
+    const separator = findSseSeparator(buffer, offset);
+    const boundaryIndex = separator
+      ? separator.index
+      : flush
+        ? buffer.length
+        : -1;
+
+    if (boundaryIndex < 0) {
+      break;
+    }
+
+    const rawEvent = buffer.slice(offset, boundaryIndex);
+
+    const eventPayload = rawEvent
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n");
+
+    if (!eventPayload || eventPayload === "[DONE]") {
+      offset = separator ? boundaryIndex + separator.length : buffer.length;
+      continue;
+    }
+
+    try {
+      onPayload(JSON.parse(eventPayload) as OpenAIChatCompletionChunk);
+    } catch {
+      if (!flush) {
+        return offset;
+      }
+    }
+
+    offset = separator ? boundaryIndex + separator.length : buffer.length;
+  }
+
+  return offset;
+}
+
 /**
  * 安全解析工具调用参数。
  *
@@ -265,14 +482,71 @@ function normalizeContent(
  * - JSON 解析失败返回空对象。
  * - 解析结果不是普通对象也返回空对象。
  */
-function safeParseArgs(argumentsText: string | undefined): Record<string, unknown> {
-  if (!argumentsText) return {};
+function parseToolArguments(
+  argumentsText: string | undefined,
+  finishReason?: string | null,
+): { arguments: Record<string, unknown>; error?: string } {
+  if (!argumentsText) {
+    return {
+      arguments: {},
+      error: "Tool arguments were empty.",
+    };
+  }
+
+  const candidates = buildToolArgumentCandidates(argumentsText);
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      if (!isRecord(parsed)) {
+        continue;
+      }
+      return { arguments: parsed };
+    } catch {
+      // Try the next candidate.
+    }
+  }
+
   try {
     const parsed = JSON.parse(argumentsText) as unknown;
-    return isRecord(parsed) ? parsed : {};
-  } catch {
-    return {};
+    if (!isRecord(parsed)) {
+      return {
+        arguments: {},
+        error: "Tool arguments were not a JSON object.",
+      };
+    }
+    return { arguments: parsed };
+  } catch (error) {
+    const reason =
+      finishReason === "length"
+        ? " The model output likely hit a length limit. Retry with smaller chunks or a shorter tool payload."
+        : "";
+
+    return {
+      arguments: {},
+      error: `Failed to parse tool arguments as JSON.${reason} Raw length=${argumentsText.length}. ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
   }
+}
+
+function buildToolArgumentCandidates(argumentsText: string): string[] {
+  const trimmed = argumentsText.trim();
+  const candidates = [trimmed];
+
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)?.[1];
+  if (fenced) {
+    candidates.push(fenced.trim());
+  }
+
+  const firstBraceIndex = trimmed.indexOf("{");
+  const lastBraceIndex = trimmed.lastIndexOf("}");
+  if (firstBraceIndex >= 0 && lastBraceIndex > firstBraceIndex) {
+    candidates.push(trimmed.slice(firstBraceIndex, lastBraceIndex + 1));
+  }
+
+  return [...new Set(candidates.filter(Boolean))];
 }
 
 /**
@@ -309,4 +583,45 @@ function normalizeFinishReason(
  */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function shouldFallbackToNonStreaming(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  if (error.name === "AbortError") {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("stream") &&
+    (message.includes("unsupported") ||
+      message.includes("not support") ||
+      message.includes("not supported") ||
+      message.includes("invalid"))
+  );
+}
+
+function findSseSeparator(
+  buffer: string,
+  fromIndex: number,
+): { index: number; length: number } | null {
+  const crlfIndex = buffer.indexOf("\r\n\r\n", fromIndex);
+  const lfIndex = buffer.indexOf("\n\n", fromIndex);
+
+  if (crlfIndex < 0 && lfIndex < 0) {
+    return null;
+  }
+
+  if (crlfIndex < 0) {
+    return { index: lfIndex, length: 2 };
+  }
+
+  if (lfIndex < 0 || crlfIndex < lfIndex) {
+    return { index: crlfIndex, length: 4 };
+  }
+
+  return { index: lfIndex, length: 2 };
 }

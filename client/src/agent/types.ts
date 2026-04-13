@@ -68,6 +68,10 @@ export interface ToolCall {
   name: string;
   /** 解析后的工具参数对象。 */
   arguments: Record<string, unknown>;
+  /** 原始参数文本，便于调试或在解析失败时返回更明确错误。 */
+  rawArguments?: string;
+  /** 参数解析失败时的错误信息。 */
+  argumentsParseError?: string;
 }
 
 /**
@@ -80,6 +84,8 @@ export interface ToolCall {
  * - `App.tsx` 会把最终结果映射成前端展示消息。
  */
 export interface AgentMessage {
+  /** 可选消息 ID，方便前端在流式更新时稳定定位同一条消息。 */
+  id?: string;
   /** 消息角色。 */
   role: AgentRole;
   /** 文本内容。对 tool 消息来说通常是 JSON 字符串。 */
@@ -109,6 +115,10 @@ export interface ModelGenerateParams {
   maxTokens?: number;
   /** 采样温度。 */
   temperature?: number;
+  /** 允许外部中断模型请求。 */
+  signal?: AbortSignal;
+  /** 流式文本增量回调。 */
+  onTextDelta?: (delta: string) => void;
 }
 
 /**
@@ -137,7 +147,7 @@ export interface ModelGenerateResult {
  * - 后续可用于高级控制，如限制 maxSteps 或覆盖 systemPrompt。
  */
 export interface AgentRunOptions {
-  /** 最多允许执行多少轮模型推理。 */
+  /** 最多允许执行多少轮模型推理。默认 20。 */
   maxSteps?: number;
   /** 本次运行临时覆盖系统提示词。 */
   systemPrompt?: string;
@@ -145,7 +155,36 @@ export interface AgentRunOptions {
   temperature?: number;
   /** 本次运行临时覆盖最大输出长度。 */
   maxTokens?: number;
+  /** 允许外部中断当前整轮运行。 */
+  signal?: AbortSignal;
+  /** 运行期间的流式事件通知。 */
+  onEvent?: (event: AgentRunEvent) => void;
 }
+
+export type AgentRunEvent =
+  | {
+      type: "assistant_step_start";
+      step: number;
+      messageId: string;
+    }
+  | {
+      type: "assistant_text_delta";
+      step: number;
+      messageId: string;
+      delta: string;
+      content: string;
+    }
+  | {
+      type: "assistant_message_complete";
+      step: number;
+      messageId: string;
+      message: AgentMessage;
+    }
+  | {
+      type: "tool_message";
+      step: number;
+      message: AgentMessage;
+    };
 
 /**
  * Agent 最终执行结果。

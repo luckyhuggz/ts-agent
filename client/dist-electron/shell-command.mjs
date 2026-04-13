@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { resolve } from "node:path";
+import { getCurrentWorkspaceDir, resolveWorkspacePath } from "./workspace.mjs";
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_CHARS = 20_000;
@@ -8,7 +8,7 @@ export async function runShellCommand(request) {
     if (!command) {
         throw new Error("command is required.");
     }
-    const cwd = resolve(String(request.cwd ?? process.cwd()));
+    const cwd = request.cwd ? resolveWorkspacePath(request.cwd) : getCurrentWorkspaceDir();
     const timeoutMs = normalizeTimeout(request.timeoutMs);
     const shellSpec = getShellSpec(command);
     return new Promise((resolvePromise, rejectPromise) => {

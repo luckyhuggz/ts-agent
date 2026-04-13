@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { resolve } from "node:path";
+import { getCurrentWorkspaceDir, resolveWorkspacePath } from "./workspace.mjs";
 
 export interface DesktopShellCommandRequest {
   command: string;
@@ -32,7 +32,7 @@ export async function runShellCommand(
     throw new Error("command is required.");
   }
 
-  const cwd = resolve(String(request.cwd ?? process.cwd()));
+  const cwd = request.cwd ? resolveWorkspacePath(request.cwd) : getCurrentWorkspaceDir();
   const timeoutMs = normalizeTimeout(request.timeoutMs);
   const shellSpec = getShellSpec(command);
 

@@ -1,5 +1,13 @@
 import type { ToolCall, ToolDefinition } from "./types";
-import { readDocumentFile, runShellCommand, writeDocumentFile } from "@/lib/desktop";
+import {
+  importSkill,
+  listSkills,
+  loadSkill,
+  readDocumentFile,
+  readSkillResource,
+  runShellCommand,
+  writeDocumentFile,
+} from "@/lib/desktop";
 
 /**
  * 工具执行上下文。
@@ -102,6 +110,14 @@ export class ToolRegistry {
         toolCall,
         ok: false,
         result: `Tool "${toolCall.name}" is not registered.`,
+      };
+    }
+
+    if (toolCall.argumentsParseError) {
+      return {
+        toolCall,
+        ok: false,
+        result: `Tool arguments for "${toolCall.name}" could not be parsed. ${toolCall.argumentsParseError}`,
       };
     }
 
@@ -224,7 +240,7 @@ export function createDocumentReadTool(): Tool<{
     definition: {
       name: "read_document_content",
       description:
-        "Read text content from a local .txt, .md, .docx, or .pdf file. Use an absolute file path when possible.",
+        "Read text content from a local .txt, .md, .html, .docx, or .pdf file. Use an absolute file path when possible.",
       inputSchema: {
         type: "object",
         properties: {
@@ -250,15 +266,64 @@ export function createDocumentReadTool(): Tool<{
 }
 
 /**
+ * 创建“写入本地文档内容”工具。
+ *
+ * 使用方式：
+ * - 适合创建新文件，或对较短内容做整文件覆盖。
+ * - 对长 HTML / 长文本，不要把整份内容放进工具 JSON 参数；应优先使用系统提示词里定义的 `lucky-file` 文件块协议。
+ */
+export function createDocumentWriteTool(): Tool<{
+  filePath: string;
+  fileName: string;
+  extension: string;
+  charCount: number;
+  mode: "overwrite" | "replace_text";
+  replacedCount: number;
+}> {
+  return {
+    definition: {
+      name: "write_document_content",
+      description:
+        "Create or overwrite a local .txt, .md, .html, or .docx file with complete content. Use this for short or medium files. For large file bodies, especially long HTML, do not send the whole file in tool JSON arguments; use the lucky-file assistant block strategy from the system instructions.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          filePath: {
+            type: "string",
+            description: "Target file path. Relative paths are resolved inside the current workspace.",
+          },
+          content: {
+            type: "string",
+            description: "Complete file content to write.",
+          },
+        },
+        required: ["filePath", "content"],
+        additionalProperties: false,
+      },
+    },
+    async execute(args) {
+      const filePath = String(args.filePath ?? "").trim();
+      if (!filePath) {
+        throw new Error("filePath is required");
+      }
+
+      return writeDocumentFile(filePath, {
+        content: typeof args.content === "string" ? args.content : String(args.content ?? ""),
+      });
+    },
+  };
+}
+
+/**
  * 创建“编辑本地文档内容”工具。
  *
  * 使用方式：
  * - 先通过 `read_document_content` 获取现有内容。
- * - 再把完整的更新后内容传给这个工具覆盖写回文件。
+ * - 再用 oldString/newString 做精确替换。
  *
  * 说明：
- * - `txt` / `md` 会直接写入 UTF-8 文本。
- * - `docx` 会根据纯文本重新生成 Word 文档，不保留原有复杂样式。
+ * - 对已有文本文件，优先使用局部替换而不是整文件重写。
+ * - `docx` 只支持整篇纯文本覆盖，不支持局部替换。
  */
 export function createDocumentEditTool(): Tool<{
   filePath: string;
@@ -272,7 +337,7 @@ export function createDocumentEditTool(): Tool<{
     definition: {
       name: "edit_document_content",
       description:
-        "Edit a local document. For .txt/.md files, prefer oldString/newString replacement. For .docx files, only use full content overwrite.",
+        "Edit an existing local document. For .txt/.md/.html files, use oldString/newString replacement. For .docx files, only use complete content overwrite. Do not use this tool to send a very large whole HTML file body in JSON arguments.",
       inputSchema: {
         type: "object",
         properties: {
@@ -282,19 +347,19 @@ export function createDocumentEditTool(): Tool<{
           },
           content: {
             type: "string",
-            description: "Full updated content to overwrite the document. Required for .docx, optional for .txt/.md.",
+            description: "Full updated content to overwrite the document. Only use this for .docx or small complete rewrites.",
           },
           oldString: {
             type: "string",
-            description: "For .txt/.md only: the exact text segment to replace.",
+            description: "For .txt/.md/.html only: the exact text segment to replace.",
           },
           newString: {
             type: "string",
-            description: "For .txt/.md only: replacement text for oldString.",
+            description: "For .txt/.md/.html only: replacement text for oldString.",
           },
           replaceAll: {
             type: "boolean",
-            description: "For .txt/.md only: if true, replace every occurrence of oldString.",
+            description: "For .txt/.md/.html only: if true, replace every occurrence of oldString.",
           },
         },
         required: ["filePath"],
@@ -379,6 +444,135 @@ export function createShellTool(): Tool<{
         command,
         cwd: cwd || undefined,
         timeoutMs,
+      });
+    },
+  };
+}
+
+/**
+ * 创建“列出当前工作目录可用 skills”工具。
+ */
+export function createListSkillsTool(): Tool<Awaited<ReturnType<typeof listSkills>>> {
+  return {
+    definition: {
+      name: "list_skills",
+      description:
+        "List the skills available in the current workspace. Use this to discover which skills can help with the user's task.",
+      inputSchema: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+    async execute() {
+      return listSkills();
+    },
+  };
+}
+
+/**
+ * 创建“加载单个 skill 内容”工具。
+ */
+export function createLoadSkillTool(): Tool<Awaited<ReturnType<typeof loadSkill>>> {
+  return {
+    definition: {
+      name: "load_skill",
+      description:
+        "Load a single skill by name and return its full SKILL.md content plus the list of resource files in that skill directory.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          skillName: {
+            type: "string",
+            description: "The skill name from the catalog, such as vercel-deploy",
+          },
+        },
+        required: ["skillName"],
+        additionalProperties: false,
+      },
+    },
+    async execute(args) {
+      const skillName = String(args.skillName ?? "").trim();
+      if (!skillName) {
+        throw new Error("skillName is required");
+      }
+      return loadSkill(skillName);
+    },
+  };
+}
+
+/**
+ * 创建“读取 skill 资源文件”工具。
+ */
+export function createReadSkillResourceTool(): Tool<Awaited<ReturnType<typeof readSkillResource>>> {
+  return {
+    definition: {
+      name: "read_skill_resource",
+      description:
+        "Read a text resource file inside a loaded skill directory, such as references, scripts, templates, or additional markdown instructions.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          skillName: {
+            type: "string",
+            description: "The skill name.",
+          },
+          relativePath: {
+            type: "string",
+            description: "Path relative to the skill directory, such as references/guide.md",
+          },
+        },
+        required: ["skillName", "relativePath"],
+        additionalProperties: false,
+      },
+    },
+    async execute(args) {
+      const skillName = String(args.skillName ?? "").trim();
+      const relativePath = String(args.relativePath ?? "").trim();
+      if (!skillName) {
+        throw new Error("skillName is required");
+      }
+      if (!relativePath) {
+        throw new Error("relativePath is required");
+      }
+      return readSkillResource({ skillName, relativePath });
+    },
+  };
+}
+
+/**
+ * 创建“导入外部 skill 到当前工作目录”工具。
+ */
+export function createImportSkillTool(): Tool<Awaited<ReturnType<typeof importSkill>>> {
+  return {
+    definition: {
+      name: "import_skill",
+      description:
+        "Import an external skill folder into the current workspace under .agents/skills. The source must contain a SKILL.md file.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          sourcePath: {
+            type: "string",
+            description: "Absolute path to a skill directory or a SKILL.md file to import.",
+          },
+          replaceExisting: {
+            type: "boolean",
+            description: "If true, overwrite an existing imported skill with the same directory name.",
+          },
+        },
+        required: ["sourcePath"],
+        additionalProperties: false,
+      },
+    },
+    async execute(args) {
+      const sourcePath = String(args.sourcePath ?? "").trim();
+      if (!sourcePath) {
+        throw new Error("sourcePath is required");
+      }
+      return importSkill({
+        sourcePath,
+        replaceExisting: typeof args.replaceExisting === "boolean" ? args.replaceExisting : undefined,
       });
     },
   };

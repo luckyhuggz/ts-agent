@@ -1,7 +1,8 @@
-import { basename, extname, resolve } from "node:path";
+import { basename, extname } from "node:path";
 import { readFile } from "node:fs/promises";
 import mammoth from "mammoth";
 import { PDFParse } from "pdf-parse";
+import { resolveWorkspacePath } from "./workspace.mjs";
 
 export interface DesktopDocumentReadRequest {
   filePath: string;
@@ -17,7 +18,7 @@ export interface DesktopDocumentReadResponse {
   warnings: string[];
 }
 
-const SUPPORTED_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".docx", ".pdf"]);
+const SUPPORTED_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".html", ".htm", ".docx", ".pdf"]);
 const MAX_CONTENT_CHARS = 20_000;
 
 export async function readDocumentFile(
@@ -28,10 +29,10 @@ export async function readDocumentFile(
     throw new Error("filePath is required.");
   }
 
-  const resolvedPath = resolve(inputPath);
+  const resolvedPath = resolveWorkspacePath(inputPath);
   const extension = extname(resolvedPath).toLowerCase();
   if (!SUPPORTED_EXTENSIONS.has(extension)) {
-    throw new Error(`Unsupported file type "${extension || "unknown"}". Supported: .txt, .md, .docx, .pdf`);
+    throw new Error(`Unsupported file type "${extension || "unknown"}". Supported: .txt, .md, .html, .docx, .pdf`);
   }
 
   const { content, warnings } = await extractDocumentContent(resolvedPath, extension);
@@ -57,7 +58,13 @@ async function extractDocumentContent(
   filePath: string,
   extension: string,
 ): Promise<{ content: string; warnings: string[] }> {
-  if (extension === ".txt" || extension === ".md" || extension === ".markdown") {
+  if (
+    extension === ".txt" ||
+    extension === ".md" ||
+    extension === ".markdown" ||
+    extension === ".html" ||
+    extension === ".htm"
+  ) {
     const content = await readFile(filePath, "utf8");
     return { content, warnings: [] };
   }

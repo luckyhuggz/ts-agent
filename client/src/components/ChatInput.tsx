@@ -1,5 +1,5 @@
 import { useRef, useState, type KeyboardEvent } from "react";
-import { SendHorizonal, Square } from "lucide-react";
+import { FolderOpen, Home, SendHorizonal, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -9,9 +9,20 @@ interface ChatInputProps {
   onStop?: () => void;
   isLoading: boolean;
   disabled?: boolean;
+  workspaceDir: string;
+  onChooseWorkspace?: () => void;
+  onResetWorkspace?: () => void;
 }
 
-export function ChatInput({ onSend, onStop, isLoading, disabled }: ChatInputProps) {
+export function ChatInput({
+  onSend,
+  onStop,
+  isLoading,
+  disabled,
+  workspaceDir,
+  onChooseWorkspace,
+  onResetWorkspace,
+}: ChatInputProps) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -32,6 +43,34 @@ export function ChatInput({ onSend, onStop, isLoading, disabled }: ChatInputProp
 
   return (
     <div className="border-t border-border bg-background px-4 py-3">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <span className="text-[11px] font-medium text-muted-foreground">工作目录</span>
+        <code className="max-w-full rounded bg-muted px-2 py-1 text-[11px] text-muted-foreground">
+          {workspaceDir || "加载中..."}
+        </code>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={onChooseWorkspace}
+          disabled={isLoading}
+          className="h-7 gap-1.5 px-2 text-[11px]"
+        >
+          <FolderOpen className="h-3.5 w-3.5" />
+          选择文件夹
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          onClick={onResetWorkspace}
+          disabled={isLoading}
+          className="h-7 gap-1.5 px-2 text-[11px]"
+        >
+          <Home className="h-3.5 w-3.5" />
+          默认目录
+        </Button>
+      </div>
       <div className="flex items-end gap-2">
         <Textarea
           ref={textareaRef}

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,9 +18,10 @@ import type { ModelConfig } from "@/lib/config";
 interface ModelConfigDialogProps {
   config: ModelConfig;
   onSave: (config: ModelConfig) => void;
+  trigger?: ReactNode;
 }
 
-export function ModelConfigDialog({ config, onSave }: ModelConfigDialogProps) {
+export function ModelConfigDialog({ config, onSave, trigger }: ModelConfigDialogProps) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<ModelConfig>(config);
 
@@ -37,9 +38,11 @@ export function ModelConfigDialog({ config, onSave }: ModelConfigDialogProps) {
   return (
     <Dialog open={open} onOpenChange={handleOpen}>
       <DialogTrigger asChild>
-        <Button variant="ghost" size="icon" title="模型配置">
-          <Settings className="h-4 w-4" />
-        </Button>
+        {trigger ?? (
+          <Button variant="ghost" size="icon" title="模型配置">
+            <Settings className="h-4 w-4" />
+          </Button>
+        )}
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
@@ -75,6 +78,23 @@ export function ModelConfigDialog({ config, onSave }: ModelConfigDialogProps) {
               placeholder="gpt-4o-mini"
               value={draft.model}
               onChange={(e) => setDraft({ ...draft, model: e.target.value })}
+            />
+          </div>
+
+          <div className="grid gap-1.5">
+            <Label htmlFor="maxTokens">最大输出 Tokens</Label>
+            <Input
+              id="maxTokens"
+              type="number"
+              min={1024}
+              step={512}
+              value={String(draft.maxTokens)}
+              onChange={(e) =>
+                setDraft({
+                  ...draft,
+                  maxTokens: Math.max(1024, Number.parseInt(e.target.value || "0", 10) || 1024),
+                })
+              }
             />
           </div>
 
